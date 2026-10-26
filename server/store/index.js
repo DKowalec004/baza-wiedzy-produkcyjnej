@@ -5,10 +5,36 @@ const logger = require('../logger');
 const files = require('../files');
 const jsonStore = require('./json-store');
 const mssqlStore = require('./mssql-store');
-const { normalizeDb, emptyState, uid } = require('./helpers');
+const { normalizeDb, emptyState, uid, versionConflict } = require('./helpers');
 
 let backend = jsonStore;
 let backendName = 'json';
+let currentVersion = 0;
+let writeTail = Promise.resolve();
+
+function enqueueWrite(fn) {
+  const run = writeTail.then(() => fn(), () => fn());
+  writeTail = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+function rememberVersion(state) {
+  if (state && state.version != null) currentVersion = Number(state.version) || 0;
+  return state;
+}
+
+async function rememberVersionAfterMutation(state) {
+  if (state && state.version != null) {
+    currentVersion = Number(state.version) || 0;
+    return currentVersion;
+  }
+  if (typeof backend.getVersion === 'function') {
+    currentVersion = Number(await backend.getVersion()) || currentVersion;
+  } else {
+    currentVersion += 1;
+  }
+  return currentVersion;
+}
 
 async function initStore() {
   files.ensureStorageDirs();
@@ -16,22 +42,27 @@ async function initStore() {
     backend = jsonStore;
     backendName = 'json';
     logger.warn('MSSQL wyłączone — używany jest lokalny plik data/state.json');
-    return backendName;
+  } else {
+    try {
+      await mssqlStore.connect();
+      backend = mssqlStore;
+      backendName = 'mssql';
+    } catch (err) {
+      backend = jsonStore;
+      backendName = 'json';
+      logger.error('Nie udało się połączyć z MSSQL — przełączenie na plik JSON', {
+        error: err.message,
+        stack: err.stack
+      });
+    }
   }
   try {
-    await mssqlStore.connect();
-    backend = mssqlStore;
-    backendName = 'mssql';
-    return backendName;
+    rememberVersion(await backend.loadState());
   } catch (err) {
-    backend = jsonStore;
-    backendName = 'json';
-    logger.error('Nie udało się połączyć z MSSQL — przełączenie na plik JSON', {
-      error: err.message,
-      stack: err.stack
-    });
-    return backendName;
+    currentVersion = 0;
+    logger.warn('Nie udało się odczytać wersji stanu — ustawiono 0', { error: err.message });
   }
+  return backendName;
 }
 
 function attachTables(state) {
@@ -114,38 +145,47 @@ function removeUrls(kind, urls) {
 
 const store = {
   name: () => backendName,
+  getVersion: () => currentVersion,
 
   async loadState() {
-    const state = await backend.loadState();
+    const state = rememberVersion(await backend.loadState());
     return attachTables(state || emptyState());
   },
 
-  async saveState(db) {
-    const persisted = persistDbFiles(db);
-    const state = await backend.saveDb(persisted);
-    return attachTables(state);
+  async saveState(db, options = {}) {
+    return enqueueWrite(async () => {
+      const expected = options.expectedVersion;
+      if (expected != null && Number(expected) !== Number(currentVersion)) {
+        throw versionConflict(attachTables(rememberVersion(await backend.loadState()) || emptyState()));
+      }
+      const persisted = persistDbFiles(db);
+      const state = rememberVersion(await backend.saveDb(persisted));
+      return attachTables(state);
+    });
   },
 
   async importAll(payload) {
-    const db = persistDbFiles(payload.db);
-    const photos = {};
-    const instancePhotos = {};
-    const elementFiles = {};
-    const instanceFiles = {};
-    for (const [id, items] of Object.entries(payload.photos || {})) {
-      photos[id] = persistPhotoItems('element', id, items);
-    }
-    for (const [id, items] of Object.entries(payload.instancePhotos || {})) {
-      instancePhotos[id] = persistPhotoItems('instance', id, items);
-    }
-    for (const [id, items] of Object.entries(payload.elementFiles || {})) {
-      elementFiles[id] = persistAttachmentItems('element', id, items);
-    }
-    for (const [id, items] of Object.entries(payload.instanceFiles || {})) {
-      instanceFiles[id] = persistAttachmentItems('instance', id, items);
-    }
-    const state = await backend.importAll({ db, photos, instancePhotos, elementFiles, instanceFiles });
-    return attachTables(state);
+    return enqueueWrite(async () => {
+      const db = persistDbFiles(payload.db);
+      const photos = {};
+      const instancePhotos = {};
+      const elementFiles = {};
+      const instanceFiles = {};
+      for (const [id, items] of Object.entries(payload.photos || {})) {
+        photos[id] = persistPhotoItems('element', id, items);
+      }
+      for (const [id, items] of Object.entries(payload.instancePhotos || {})) {
+        instancePhotos[id] = persistPhotoItems('instance', id, items);
+      }
+      for (const [id, items] of Object.entries(payload.elementFiles || {})) {
+        elementFiles[id] = persistAttachmentItems('element', id, items);
+      }
+      for (const [id, items] of Object.entries(payload.instanceFiles || {})) {
+        instanceFiles[id] = persistAttachmentItems('instance', id, items);
+      }
+      const state = rememberVersion(await backend.importAll({ db, photos, instancePhotos, elementFiles, instanceFiles }));
+      return attachTables(state);
+    });
   },
 
   async listPhotos(kind, ownerId) {
@@ -153,23 +193,32 @@ const store = {
   },
 
   async addPhoto(kind, ownerId, dataUrl) {
-    const current = await backend.listPhotos(kind, ownerId);
-    const saved = files.saveDataUrl('photos', uid('img'), dataUrl);
-    const items = current.concat([saved.url]);
-    await backend.replacePhotos(kind, ownerId, items);
-    return { url: saved.url };
+    return enqueueWrite(async () => {
+      const current = await backend.listPhotos(kind, ownerId);
+      const saved = files.saveDataUrl('photos', uid('img'), dataUrl);
+      const items = current.concat([saved.url]);
+      await backend.replacePhotos(kind, ownerId, items);
+      await rememberVersionAfterMutation();
+      return { url: saved.url, version: currentVersion };
+    });
   },
 
   async replacePhotos(kind, ownerId, items) {
-    const urls = persistPhotoItems(kind, ownerId, items);
-    await backend.replacePhotos(kind, ownerId, urls);
-    return urls;
+    return enqueueWrite(async () => {
+      const urls = persistPhotoItems(kind, ownerId, items);
+      await backend.replacePhotos(kind, ownerId, urls);
+      await rememberVersionAfterMutation();
+      return urls;
+    });
   },
 
   async deletePhotos(kind, ownerId) {
-    const urls = await backend.deletePhotos(kind, ownerId);
-    removeUrls('photos', urls);
-    return urls;
+    return enqueueWrite(async () => {
+      const urls = await backend.deletePhotos(kind, ownerId);
+      removeUrls('photos', urls);
+      await rememberVersionAfterMutation();
+      return urls;
+    });
   },
 
   async listAttachments(kind, ownerId) {
@@ -177,91 +226,109 @@ const store = {
   },
 
   async addAttachment(kind, ownerId, body) {
-    const current = await backend.listAttachments(kind, ownerId);
-    const id = body.id || uid('file');
-    let item;
-    if (body.dataUrl) {
-      const saved = files.saveDataUrl('attachments', id, body.dataUrl, body.name);
-      item = {
-        id,
-        name: body.name || saved.fileName,
-        type: body.type || saved.mime || '',
-        size: body.size || saved.size || 0,
-        fileName: saved.fileName,
-        url: saved.url,
-        dataUrl: saved.url
-      };
-    } else {
-      throw new Error('Brak zawartości załącznika.');
-    }
-    const items = current.concat([item]);
-    await backend.replaceAttachments(kind, ownerId, items);
-    return item;
+    return enqueueWrite(async () => {
+      const current = await backend.listAttachments(kind, ownerId);
+      const id = body.id || uid('file');
+      let item;
+      if (body.dataUrl) {
+        const saved = files.saveDataUrl('attachments', id, body.dataUrl, body.name);
+        item = {
+          id,
+          name: body.name || saved.fileName,
+          type: body.type || saved.mime || '',
+          size: body.size || saved.size || 0,
+          fileName: saved.fileName,
+          url: saved.url,
+          dataUrl: saved.url
+        };
+      } else {
+        throw new Error('Brak zawartości załącznika.');
+      }
+      const items = current.concat([item]);
+      await backend.replaceAttachments(kind, ownerId, items);
+      await rememberVersionAfterMutation();
+      return { ...item, version: currentVersion };
+    });
   },
 
   async replaceAttachments(kind, ownerId, items) {
-    const normalized = persistAttachmentItems(kind, ownerId, items);
-    await backend.replaceAttachments(kind, ownerId, normalized);
-    return normalized;
+    return enqueueWrite(async () => {
+      const normalized = persistAttachmentItems(kind, ownerId, items);
+      await backend.replaceAttachments(kind, ownerId, normalized);
+      await rememberVersionAfterMutation();
+      return normalized;
+    });
   },
 
   async deleteAttachments(kind, ownerId) {
-    const items = await backend.deleteAttachments(kind, ownerId);
-    removeUrls('attachments', (items || []).map((i) => (typeof i === 'string' ? i : i.url)));
-    return items;
+    return enqueueWrite(async () => {
+      const items = await backend.deleteAttachments(kind, ownerId);
+      removeUrls('attachments', (items || []).map((i) => (typeof i === 'string' ? i : i.url)));
+      await rememberVersionAfterMutation();
+      return items;
+    });
   },
 
   async saveTable({ id, groupId, name, table, date, file }) {
-    const tableId = id || uid('ttab');
-    const written = files.writeJsonTable(tableId, table);
-    let sourceFileName = null;
-    if (file && file.buffer) {
-      const saved = files.saveUpload('tables', tableId + '_src', file);
-      sourceFileName = saved.fileName;
-    }
-    const meta = {
-      id: tableId,
-      groupId,
-      name,
-      table,
-      date,
-      dataFileName: written.fileName,
-      sourceFileName
-    };
-    await backend.upsertTable(meta);
-    return meta;
+    return enqueueWrite(async () => {
+      const tableId = id || uid('ttab');
+      const written = files.writeJsonTable(tableId, table);
+      let sourceFileName = null;
+      if (file && file.buffer) {
+        const saved = files.saveUpload('tables', tableId + '_src', file);
+        sourceFileName = saved.fileName;
+      }
+      const meta = {
+        id: tableId,
+        groupId,
+        name,
+        table,
+        date,
+        dataFileName: written.fileName,
+        sourceFileName
+      };
+      await backend.upsertTable(meta);
+      await rememberVersionAfterMutation();
+      return { ...meta, version: currentVersion };
+    });
   },
 
   async updateTable(id, { name, table, date }) {
-    if (table) files.writeJsonTable(id, table);
-    const meta = {
-      id,
-      groupId: null,
-      name,
-      table,
-      date,
-      dataFileName: id + '.json'
-    };
-    const state = await backend.loadState();
-    const existing = (state.db.techTables || []).find((t) => t.id === id);
-    if (existing) {
-      meta.groupId = existing.groupId;
-      meta.sourceFileName = existing.sourceFileName || null;
-      meta.name = name != null ? name : existing.name;
-      meta.date = date != null ? date : existing.date;
-      meta.table = table || existing.table;
-    }
-    await backend.upsertTable(meta);
-    return meta;
+    return enqueueWrite(async () => {
+      if (table) files.writeJsonTable(id, table);
+      const meta = {
+        id,
+        groupId: null,
+        name,
+        table,
+        date,
+        dataFileName: id + '.json'
+      };
+      const state = await backend.loadState();
+      const existing = (state.db.techTables || []).find((t) => t.id === id);
+      if (existing) {
+        meta.groupId = existing.groupId;
+        meta.sourceFileName = existing.sourceFileName || null;
+        meta.name = name != null ? name : existing.name;
+        meta.date = date != null ? date : existing.date;
+        meta.table = table || existing.table;
+      }
+      await backend.upsertTable(meta);
+      await rememberVersionAfterMutation();
+      return { ...meta, version: currentVersion };
+    });
   },
 
   async deleteTable(id) {
-    const removed = await backend.deleteTable(id);
-    files.removeFile('tables', id + '.json');
-    if (removed && (removed.SourceFileName || removed.sourceFileName)) {
-      files.removeFile('tables', removed.SourceFileName || removed.sourceFileName);
-    }
-    return removed;
+    return enqueueWrite(async () => {
+      const removed = await backend.deleteTable(id);
+      files.removeFile('tables', id + '.json');
+      if (removed && (removed.SourceFileName || removed.sourceFileName)) {
+        files.removeFile('tables', removed.SourceFileName || removed.sourceFileName);
+      }
+      await rememberVersionAfterMutation();
+      return removed;
+    });
   }
 };
 

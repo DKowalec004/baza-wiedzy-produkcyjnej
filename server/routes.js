@@ -22,7 +22,11 @@ function assertOwner(kind) {
 }
 
 router.get('/health', (req, res) => {
-  res.json({ ok: true, store: store.name() });
+  res.json({ ok: true, store: store.name(), version: store.getVersion() });
+});
+
+router.get('/state/version', (req, res) => {
+  res.json({ version: store.getVersion() });
 });
 
 router.get('/state', asyncHandler(async (req, res) => {
@@ -37,8 +41,8 @@ router.put('/state', asyncHandler(async (req, res) => {
     err.expose = true;
     throw err;
   }
-  const state = await store.saveState(req.body.db);
-  logger.info('Zapisano stan aplikacji', { store: store.name() });
+  const state = await store.saveState(req.body.db, { expectedVersion: req.body.version });
+  logger.info('Zapisano stan aplikacji', { store: store.name(), version: state.version });
   res.json(state);
 }));
 
@@ -69,14 +73,14 @@ router.post('/photos', asyncHandler(async (req, res) => {
     throw err;
   }
   const created = await store.addPhoto(ownerType, ownerId, dataUrl);
-  res.status(201).json(created);
+  res.status(201).json({ ...created, version: store.getVersion() });
 }));
 
 router.put('/photos/:kind/:ownerId', asyncHandler(async (req, res) => {
   assertOwner(req.params.kind);
   const items = (req.body && (req.body.items || req.body.urls)) || [];
   const saved = await store.replacePhotos(req.params.kind, req.params.ownerId, items);
-  res.json({ items: saved });
+  res.json({ items: saved, version: store.getVersion() });
 }));
 
 router.delete('/photos/:kind/:ownerId', asyncHandler(async (req, res) => {
@@ -94,14 +98,14 @@ router.post('/attachments', asyncHandler(async (req, res) => {
   const body = req.body || {};
   assertOwner(body.ownerType);
   const created = await store.addAttachment(body.ownerType, body.ownerId, body);
-  res.status(201).json(created);
+  res.status(201).json({ ...created, version: store.getVersion() });
 }));
 
 router.put('/attachments/:kind/:ownerId', asyncHandler(async (req, res) => {
   assertOwner(req.params.kind);
   const items = (req.body && req.body.items) || [];
   const saved = await store.replaceAttachments(req.params.kind, req.params.ownerId, items);
-  res.json({ items: saved });
+  res.json({ items: saved, version: store.getVersion() });
 }));
 
 router.delete('/attachments/:kind/:ownerId', asyncHandler(async (req, res) => {
@@ -126,13 +130,13 @@ router.post('/tables', upload.single('file'), asyncHandler(async (req, res) => {
     date: req.body.date,
     file: req.file
   });
-  logger.info('Zapisano tabelę', { id: saved.id, file: saved.sourceFileName });
-  res.status(201).json(saved);
+  logger.info('Zapisano tabelę', { id: saved.id, file: saved.sourceFileName, version: store.getVersion() });
+  res.status(201).json({ ...saved, version: store.getVersion() });
 }));
 
 router.put('/tables/:id', asyncHandler(async (req, res) => {
   const saved = await store.updateTable(req.params.id, req.body || {});
-  res.json(saved);
+  res.json({ ...saved, version: store.getVersion() });
 }));
 
 router.delete('/tables/:id', asyncHandler(async (req, res) => {

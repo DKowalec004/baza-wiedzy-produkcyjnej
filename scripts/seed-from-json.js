@@ -302,6 +302,7 @@ function writeSeedSql(state) {
       lines.push(`INSERT INTO dbo.Attachments (Id, OwnerType, OwnerId, OriginalName, FileName, Url, MimeType, SizeBytes, SortOrder) VALUES (${sqlStr(item.id)}, N'instance', ${sqlStr(ownerId)}, ${sqlStr(item.name)}, ${sqlStr(item.fileName)}, ${sqlStr(item.url)}, ${sqlStr(item.type || '')}, ${item.size || 0}, ${i});`);
     });
   }
+  lines.push('IF NOT EXISTS (SELECT 1 FROM dbo.AppMeta WHERE Id = 1) INSERT INTO dbo.AppMeta (Id, Version) VALUES (1, 1);');
   lines.push('GO');
   const dest = config.appPath('schema', 'seed.sql');
   fs.writeFileSync(dest, lines.join('\n'), 'utf8');

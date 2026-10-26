@@ -12,4 +12,5 @@
   // preload photos for elements currently reachable is unnecessary; load lazily on open.
   // preload thumbnails for elements view we might land on (departments view doesn't need them)
   render();
+  startStateSync();
 })();

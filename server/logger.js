@@ -32,6 +32,8 @@ module.exports = {
   warn: (message, extra) => entry('warn', message, extra),
   error: (message, extra) => entry('error', message, extra),
   request(req, res, durationMs) {
+    const pathName = req.originalUrl || req.path || '';
+    if (pathName.split('?')[0] === '/api/state/version') return;
     write('access.log', {
       ts: new Date().toISOString(),
       method: req.method,

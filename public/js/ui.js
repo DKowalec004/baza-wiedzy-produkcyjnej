@@ -154,7 +154,10 @@ function openModal({title, fields, initial={}, onSave, saveLabel='Zapisz'}){
   });
   setTimeout(()=>{ const first = document.getElementById('mf-'+fields[0].key); if(first) first.focus(); }, 30);
 }
-function closeModal(){ document.getElementById('modal-root').innerHTML=''; }
+function closeModal(){
+  document.getElementById('modal-root').innerHTML='';
+  if(typeof pollStateVersion === 'function') pollStateVersion();
+}
 
 /* Existing process descriptions, scoped to a single department, used as
    combobox suggestions when adding new processes there. */
@@ -587,5 +590,8 @@ function confirmDelete(msg, onYes){
 function openLightbox(src){
   const root = document.getElementById('lightbox-root');
   root.innerHTML = `<div class="lightbox" id="lb"><img src="${src}"></div>`;
-  document.getElementById('lb').addEventListener('click', ()=> root.innerHTML='');
+  document.getElementById('lb').addEventListener('click', ()=>{
+    root.innerHTML='';
+    if(typeof pollStateVersion === 'function') pollStateVersion();
+  });
 }

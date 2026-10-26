@@ -29,6 +29,34 @@ async function getPool() {
   return pool;
 }
 
+async function ensureAppMeta(transaction) {
+  await req(transaction).query(`
+    IF OBJECT_ID(N'dbo.AppMeta', N'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.AppMeta (
+        Id INT NOT NULL PRIMARY KEY,
+        Version INT NOT NULL CONSTRAINT DF_AppMeta_Version DEFAULT (0),
+        CONSTRAINT CK_AppMeta_Single CHECK (Id = 1)
+      );
+      INSERT INTO dbo.AppMeta (Id, Version) VALUES (1, 0);
+    END
+    IF NOT EXISTS (SELECT 1 FROM dbo.AppMeta WHERE Id = 1)
+      INSERT INTO dbo.AppMeta (Id, Version) VALUES (1, 0);
+  `);
+}
+
+async function readVersion(transaction) {
+  await ensureAppMeta(transaction);
+  const rows = await queryAll('SELECT Version FROM dbo.AppMeta WHERE Id = 1', transaction);
+  return rows[0] ? Number(rows[0].Version) || 0 : 0;
+}
+
+async function incrementVersion(transaction) {
+  await ensureAppMeta(transaction);
+  await req(transaction).query('UPDATE dbo.AppMeta SET Version = Version + 1 WHERE Id = 1');
+  return readVersion(transaction);
+}
+
 function req(transaction) {
   return new sql.Request(transaction || pool);
 }
@@ -125,6 +153,7 @@ async function loadStateFromDb(transaction) {
   }
 
   return {
+    version: await readVersion(transaction),
     db,
     photos: photoMap.element,
     instancePhotos: photoMap.instance,
@@ -308,6 +337,12 @@ async function withTransaction(fn) {
 const mssqlStore = {
   async connect() {
     await getPool();
+    await ensureAppMeta();
+  },
+
+  async getVersion() {
+    await getPool();
+    return readVersion();
   },
 
   async loadState() {
@@ -318,6 +353,7 @@ const mssqlStore = {
   async saveDb(db) {
     return withTransaction(async (tx) => {
       await replaceRows(tx, normalizeDb(db));
+      await incrementVersion(tx);
       return loadStateFromDb(tx);
     });
   },
@@ -381,6 +417,7 @@ const mssqlStore = {
       };
       await writeFiles(payload.elementFiles, 'element');
       await writeFiles(payload.instanceFiles, 'instance');
+      await incrementVersion(tx);
       return loadStateFromDb(tx);
     });
   },
@@ -414,6 +451,7 @@ const mssqlStore = {
           ['ord', sql.Int, ord++]
         ]);
       }
+      await incrementVersion(tx);
       return items;
     });
   },
@@ -427,6 +465,7 @@ const mssqlStore = {
         ['kind', sql.NVarChar(20), kind],
         ['owner', sql.NVarChar(64), ownerId]
       ]);
+      await incrementVersion(tx);
       return rows.map((r) => r.Url);
     });
   },
@@ -465,6 +504,7 @@ const mssqlStore = {
           ['ord', sql.Int, ord++]
         ]);
       }
+      await incrementVersion(tx);
       return items;
     });
   },
@@ -479,6 +519,7 @@ const mssqlStore = {
         ['kind', sql.NVarChar(20), kind],
         ['owner', sql.NVarChar(64), ownerId]
       ]);
+      await incrementVersion(tx);
       return rows.map((r) => r.Url);
     });
   },
@@ -496,6 +537,7 @@ const mssqlStore = {
         ['src', sql.NVarChar(500), meta.sourceFileName || null],
         ['data', sql.NVarChar(500), meta.dataFileName || (meta.id + '.json')]
       ]);
+      await incrementVersion(tx);
       return meta;
     });
   },
@@ -504,6 +546,7 @@ const mssqlStore = {
     return withTransaction(async (tx) => {
       const rows = await queryAll(`SELECT * FROM dbo.TechTables WHERE Id = '${String(id).replace(/'/g, '')}'`, tx);
       await exec(tx, 'DELETE FROM dbo.TechTables WHERE Id = @id', [['id', sql.NVarChar(64), id]]);
+      await incrementVersion(tx);
       return rows[0] || null;
     });
   }

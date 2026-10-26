@@ -27,6 +27,7 @@ IF OBJECT_ID(N'dbo.Instances', N'U') IS NOT NULL DROP TABLE dbo.Instances;
 IF OBJECT_ID(N'dbo.Elements', N'U') IS NOT NULL DROP TABLE dbo.Elements;
 IF OBJECT_ID(N'dbo.Departments', N'U') IS NOT NULL DROP TABLE dbo.Departments;
 IF OBJECT_ID(N'dbo.TechGroups', N'U') IS NOT NULL DROP TABLE dbo.TechGroups;
+IF OBJECT_ID(N'dbo.AppMeta', N'U') IS NOT NULL DROP TABLE dbo.AppMeta;
 GO
 
 CREATE TABLE dbo.Departments (
@@ -153,6 +154,14 @@ CREATE TABLE dbo.Attachments (
   SizeBytes    BIGINT         NOT NULL CONSTRAINT DF_Att_Size DEFAULT (0),
   SortOrder    INT            NOT NULL CONSTRAINT DF_Att_Sort DEFAULT (0)
 );
+
+CREATE TABLE dbo.AppMeta (
+  Id      INT NOT NULL PRIMARY KEY,
+  Version INT NOT NULL CONSTRAINT DF_AppMeta_Version DEFAULT (0),
+  CONSTRAINT CK_AppMeta_Single CHECK (Id = 1)
+);
+
+INSERT INTO dbo.AppMeta (Id, Version) VALUES (1, 0);
 
 CREATE INDEX IX_Elements_Department ON dbo.Elements (DepartmentId);
 CREATE INDEX IX_Instances_Element ON dbo.Instances (ElementId);

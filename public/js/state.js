@@ -12,6 +12,7 @@ let navStack = [{ view: 'departments' }];
 let searchQuery = '';
 let dataLoaded = false;
 let storageAvailable = true;
+let stateVersion = 0;
 
 function uid(prefix){
   return prefix + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -31,20 +32,93 @@ function currentView(){ return navStack[navStack.length-1]; }
  * The entry stores the whole view stack. The URL is left untouched, so this
  * works for a downloaded file opened from disk as well. */
 let rendering = false;
-function commitNav(stack, replace){
+
+function applyNavStack(stack, replace){
   navStack = stack;
-  searchQuery = '';
   try{
     const state = { pkb: 1, stack: JSON.parse(JSON.stringify(stack)) };
     // while rendering, a redirect (e.g. deleted target) replaces the entry instead of adding one
     if(replace || rendering) history.replaceState(state, '');
     else history.pushState(state, '');
   }catch(e){}
+}
+
+function commitNav(stack, replace){
+  searchQuery = '';
+  applyNavStack(stack, replace);
   render();
 }
 function pushView(v){ commitNav(navStack.concat([v])); }
 function goBack(){ if(navStack.length>1) commitNav(navStack.slice(0, -1)); }
 function resetTo(stack){ commitNav(stack); }
+
+function sectionRootFrame(){
+  return currentSection() === 'tech' ? { view: 'tech-groups' } : { view: 'departments' };
+}
+
+function isViewFrameValid(frame){
+  if(!frame || !frame.view) return false;
+  switch(frame.view){
+    case 'departments':
+    case 'tech-groups':
+      return true;
+    case 'elements':
+      return !!getDept(frame.departmentId);
+    case 'instances':
+    case 'element-notes':
+    case 'element-files':
+      return !!getElement(frame.elementId);
+    case 'information':
+    case 'instance-notes':
+    case 'instance-files':
+      return !!getInstance(frame.instanceId);
+    case 'tech-group':
+      return !!getTechGroup(frame.groupId);
+    default:
+      return false;
+  }
+}
+
+/* Keep as much of the current path as still exists. Does not jump to home
+ * unless every deeper frame disappeared (e.g. the department itself). */
+function sanitizeNavStack(){
+  const kept = [];
+  for(const frame of navStack){
+    if(!isViewFrameValid(frame)) break;
+    kept.push(frame);
+  }
+  if(!kept.length) kept.push(sectionRootFrame());
+  if(JSON.stringify(kept) === JSON.stringify(navStack)) return false;
+  applyNavStack(kept, true);
+  return true;
+}
+
+function retreatFromMissingView(){
+  sanitizeNavStack();
+  render();
+}
+
+/* Re-render after a remote update: same page, same search, same scroll. */
+function renderCurrentViewInPlace(){
+  const left = sanitizeNavStack();
+  const searchEl = document.getElementById('search-input');
+  const searchFocused = !!(searchEl && document.activeElement === searchEl);
+  const searchPos = searchEl ? searchEl.selectionStart : 0;
+  const scrollY = window.scrollY;
+  const panel = document.getElementById('side-panel');
+  const panelScroll = panel ? panel.scrollTop : 0;
+  render();
+  window.scrollTo(0, scrollY);
+  if(panel) panel.scrollTop = panelScroll;
+  if(searchFocused){
+    const again = document.getElementById('search-input');
+    if(again){
+      again.focus();
+      try{ again.setSelectionRange(searchPos, searchPos); }catch(e){}
+    }
+  }
+  if(left) showToast('Ten widok został usunięty przez innego użytkownika.');
+}
 
 function stackFromHistoryState(state){
   return state && state.pkb && Array.isArray(state.stack) && state.stack.length ? state.stack : null;

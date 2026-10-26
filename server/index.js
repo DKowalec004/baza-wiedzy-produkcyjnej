@@ -40,11 +40,17 @@ app.use((err, req, res, next) => {
     error: err.message,
     stack: err.stack
   });
-  res.status(status).json({
+  const body = {
     message: err.expose || status < 500
       ? err.message
       : 'Wystąpił błąd serwera. Szczegóły zapisano w folderze logs.'
-  });
+  };
+  if (err.payload && typeof err.payload === 'object') {
+    for (const key of Object.keys(err.payload)) {
+      if (key !== 'message') body[key] = err.payload[key];
+    }
+  }
+  res.status(status).json(body);
 });
 
 process.on('uncaughtException', (err) => {

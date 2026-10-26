@@ -184,7 +184,7 @@ function renderTechGroupsView(){
 
 function renderTechGroupView(groupId){
   const group = getTechGroup(groupId);
-  if(!group){ resetTo([{view:'tech-groups'}]); return ''; }
+  if(!group){ retreatFromMissingView(); return ''; }
   const infos = techInfosOf(groupId);
   const tables = techTablesOf(groupId);
 
@@ -270,7 +270,7 @@ function renderEditMenu({ editId, editLabel, deleteId, deleteLabel }){
 
 function renderElementsView(departmentId){
   const dept = getDept(departmentId);
-  if(!dept){ resetTo([{view:'departments'}]); return ''; }
+  if(!dept){ retreatFromMissingView(); return ''; }
   const els = elementsOf(departmentId);
 
   let html = `
@@ -326,7 +326,7 @@ function renderFileRows(files, delDataAttr){
 
 function renderInstancesView(elementId){
   const el = getElement(elementId);
-  if(!el){ resetTo([{view:'departments'}]); return ''; }
+  if(!el){ retreatFromMissingView(); return ''; }
   const dept = getDept(el.departmentId);
   const insts = instancesOf(elementId);
   const photos = photoCache[elementId] || [];
@@ -418,7 +418,7 @@ function renderInstancesView(elementId){
 
 function renderInformationView(instanceId){
   const inst = getInstance(instanceId);
-  if(!inst){ resetTo([{view:'departments'}]); return ''; }
+  if(!inst){ retreatFromMissingView(); return ''; }
   const el = getElement(inst.elementId);
   const dept = getDept(el.departmentId);
   const infos = infosOf(instanceId);
@@ -599,7 +599,7 @@ function renderNotesView(scope, ownerId){
     inst = getInstance(ownerId);
     el = inst ? getElement(inst.elementId) : null;
   }
-  if(!el){ resetTo([{view:'departments'}]); return ''; }
+  if(!el){ retreatFromMissingView(); return ''; }
   const dept = getDept(el.departmentId);
 
   const crumbLast = inst ? `Uwagi technologiczne — ${esc(inst.name)}` : 'Uwagi technologiczne';
@@ -641,7 +641,7 @@ function renderNotesView(scope, ownerId){
 
 function renderElementFilesView(elementId){
   const el = getElement(elementId);
-  if(!el){ resetTo([{view:'departments'}]); return ''; }
+  if(!el){ retreatFromMissingView(); return ''; }
   const dept = getDept(el.departmentId);
   const files = elementFilesCache[elementId] || [];
 
@@ -670,7 +670,7 @@ function renderElementFilesView(elementId){
 
 function renderInstanceFilesView(instanceId){
   const inst = getInstance(instanceId);
-  if(!inst){ resetTo([{view:'departments'}]); return ''; }
+  if(!inst){ retreatFromMissingView(); return ''; }
   const el = getElement(inst.elementId);
   const dept = getDept(el.departmentId);
   const files = instanceFilesCache[instanceId] || [];

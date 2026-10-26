@@ -24,15 +24,17 @@ async function apiRequest(path, options = {}) {
     throw err;
   }
   if (!res.ok) {
+    let payload = null;
     let message = 'Błąd serwera (' + res.status + ').';
     try {
-      const payload = await res.json();
+      payload = await res.json();
       if (payload && payload.message) message = payload.message;
     } catch (e) { /* ignore parse errors */ }
     console.error('API error', path, res.status, message);
     showToast(message);
     const error = new Error(message);
     error.status = res.status;
+    error.payload = payload;
     throw error;
   }
   if (res.status === 204) return null;
@@ -65,6 +67,12 @@ function applyStatePayload(payload) {
   instancePhotoCache = payload.instancePhotos || {};
   elementFilesCache = payload.elementFiles || {};
   instanceFilesCache = payload.instanceFiles || {};
+  if (payload && payload.version != null) stateVersion = Number(payload.version) || 0;
+}
+
+function takeVersion(payload) {
+  if (payload && payload.version != null) stateVersion = Number(payload.version) || 0;
+  return payload;
 }
 
 async function loadData() {
@@ -80,14 +88,76 @@ async function loadData() {
 }
 
 async function saveData() {
+  saveInFlight = true;
   try {
-    const payload = await apiRequest('/state', { method: 'PUT', body: { db } });
+    const payload = await apiRequest('/state', { method: 'PUT', body: { db, version: stateVersion } });
     if (payload && payload.db) applyStatePayload(payload);
+    else takeVersion(payload);
     storageAvailable = true;
   } catch (e) {
+    if (e.status === 409 && e.payload && e.payload.db) {
+      applyStatePayload(e.payload);
+      if (typeof renderCurrentViewInPlace === 'function') renderCurrentViewInPlace();
+      storageAvailable = true;
+      return;
+    }
     storageAvailable = false;
     throw e;
+  } finally {
+    saveInFlight = false;
   }
+}
+
+const STATE_POLL_MS = 4000;
+let saveInFlight = false;
+let syncInFlight = false;
+let statePollTimer = null;
+
+function isUiBusy() {
+  const modal = document.getElementById('modal-root');
+  if (modal && modal.innerHTML.trim()) return true;
+  const lightbox = document.getElementById('lightbox-root');
+  if (lightbox && lightbox.innerHTML.trim()) return true;
+  if (document.querySelector('.edit-menu.open')) return true;
+  return false;
+}
+
+async function refreshStateInPlace() {
+  if (syncInFlight || saveInFlight || isUiBusy()) return false;
+  syncInFlight = true;
+  try {
+    const payload = await apiRequest('/state');
+    if (isUiBusy()) {
+      return false;
+    }
+    applyStatePayload(payload);
+    if (typeof renderCurrentViewInPlace === 'function') renderCurrentViewInPlace();
+    return true;
+  } catch (e) {
+    return false;
+  } finally {
+    syncInFlight = false;
+  }
+}
+
+async function pollStateVersion() {
+  if (syncInFlight || saveInFlight || isUiBusy() || document.hidden) return;
+  try {
+    const res = await fetch(API_BASE + '/state/version');
+    if (!res.ok) return;
+    const payload = await res.json();
+    if (payload && payload.version != null && Number(payload.version) !== Number(stateVersion)) {
+      await refreshStateInPlace();
+    }
+  } catch (e) { /* next tick retries */ }
+}
+
+function startStateSync() {
+  if (statePollTimer) return;
+  statePollTimer = setInterval(pollStateVersion, STATE_POLL_MS);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) pollStateVersion();
+  });
 }
 
 async function uploadDataUrl(url, extra) {
@@ -139,10 +209,11 @@ async function persistMediaList(kind, ownerId, items, endpoint) {
       normalized.push(item);
     }
   }
-  await apiRequest(endpoint + '/' + encodeURIComponent(kind) + '/' + encodeURIComponent(ownerId), {
+  const saved = await apiRequest(endpoint + '/' + encodeURIComponent(kind) + '/' + encodeURIComponent(ownerId), {
     method: 'PUT',
     body: { items: normalized }
   });
+  takeVersion(saved);
   return normalized;
 }
 
@@ -229,14 +300,14 @@ async function saveTechTable({ id, groupId, name, table, date, file }) {
   form.append('date', date || '');
   form.append('table', JSON.stringify(table));
   if (file) form.append('file', file, file.name);
-  return apiRequest('/tables', { method: 'POST', body: form });
+  return takeVersion(await apiRequest('/tables', { method: 'POST', body: form }));
 }
 
 async function updateTechTable(id, { name, table, date }) {
-  return apiRequest('/tables/' + encodeURIComponent(id), {
+  return takeVersion(await apiRequest('/tables/' + encodeURIComponent(id), {
     method: 'PUT',
     body: { name, table, date }
-  });
+  }));
 }
 
 async function deleteTechTable(id) {

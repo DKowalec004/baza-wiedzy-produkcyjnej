@@ -3,12 +3,13 @@
 const fs = require('fs');
 const config = require('../config');
 const files = require('../files');
-const { emptyState, normalizeDb } = require('./helpers');
+const { emptyState, normalizeDb, nextVersion } = require('./helpers');
 
 function readStateFile() {
   if (!fs.existsSync(config.stateFile)) return emptyState();
   const raw = JSON.parse(fs.readFileSync(config.stateFile, 'utf8'));
   return {
+    version: Number(raw.version) || 0,
     db: normalizeDb(raw.db),
     photos: raw.photos || {},
     instancePhotos: raw.instancePhotos || {},
@@ -22,6 +23,14 @@ function writeStateFile(state) {
   fs.writeFileSync(config.stateFile, JSON.stringify(state, null, 2), 'utf8');
 }
 
+function mutate(writer) {
+  const state = readStateFile();
+  const extra = writer(state);
+  state.version = nextVersion(state.version);
+  writeStateFile(state);
+  return extra !== undefined ? extra : state;
+}
+
 function mediaKey(kind) {
   return kind === 'instance' ? 'instancePhotos' : 'photos';
 }
@@ -31,19 +40,24 @@ function filesKey(kind) {
 }
 
 const jsonStore = {
+  async getVersion() {
+    return Number(readStateFile().version) || 0;
+  },
+
   async loadState() {
     return readStateFile();
   },
 
   async saveDb(db) {
-    const state = readStateFile();
-    state.db = normalizeDb(db);
-    writeStateFile(state);
-    return state;
+    return mutate((state) => {
+      state.db = normalizeDb(db);
+    });
   },
 
   async importAll(payload) {
+    const previous = fs.existsSync(config.stateFile) ? readStateFile() : emptyState();
     const state = {
+      version: nextVersion(previous.version),
       db: normalizeDb(payload.db),
       photos: payload.photos || {},
       instancePhotos: payload.instancePhotos || {},
@@ -60,18 +74,18 @@ const jsonStore = {
   },
 
   async replacePhotos(kind, ownerId, items) {
-    const state = readStateFile();
-    state[mediaKey(kind)][ownerId] = items;
-    writeStateFile(state);
-    return items;
+    return mutate((state) => {
+      state[mediaKey(kind)][ownerId] = items;
+      return items;
+    });
   },
 
   async deletePhotos(kind, ownerId) {
-    const state = readStateFile();
-    const items = state[mediaKey(kind)][ownerId] || [];
-    delete state[mediaKey(kind)][ownerId];
-    writeStateFile(state);
-    return items;
+    return mutate((state) => {
+      const items = state[mediaKey(kind)][ownerId] || [];
+      delete state[mediaKey(kind)][ownerId];
+      return items;
+    });
   },
 
   async listAttachments(kind, ownerId) {
@@ -80,43 +94,43 @@ const jsonStore = {
   },
 
   async replaceAttachments(kind, ownerId, items) {
-    const state = readStateFile();
-    state[filesKey(kind)][ownerId] = items;
-    writeStateFile(state);
-    return items;
+    return mutate((state) => {
+      state[filesKey(kind)][ownerId] = items;
+      return items;
+    });
   },
 
   async deleteAttachments(kind, ownerId) {
-    const state = readStateFile();
-    const items = state[filesKey(kind)][ownerId] || [];
-    delete state[filesKey(kind)][ownerId];
-    writeStateFile(state);
-    return items;
+    return mutate((state) => {
+      const items = state[filesKey(kind)][ownerId] || [];
+      delete state[filesKey(kind)][ownerId];
+      return items;
+    });
   },
 
   async upsertTable(meta) {
-    const state = readStateFile();
-    const idx = state.db.techTables.findIndex((t) => t.id === meta.id);
-    const row = {
-      id: meta.id,
-      groupId: meta.groupId,
-      name: meta.name,
-      table: meta.table,
-      date: meta.date || '',
-      sourceFileName: meta.sourceFileName || null
-    };
-    if (idx >= 0) state.db.techTables[idx] = { ...state.db.techTables[idx], ...row };
-    else state.db.techTables.push(row);
-    writeStateFile(state);
-    return row;
+    return mutate((state) => {
+      const idx = state.db.techTables.findIndex((t) => t.id === meta.id);
+      const row = {
+        id: meta.id,
+        groupId: meta.groupId,
+        name: meta.name,
+        table: meta.table,
+        date: meta.date || '',
+        sourceFileName: meta.sourceFileName || null
+      };
+      if (idx >= 0) state.db.techTables[idx] = { ...state.db.techTables[idx], ...row };
+      else state.db.techTables.push(row);
+      return row;
+    });
   },
 
   async deleteTable(id) {
-    const state = readStateFile();
-    const item = state.db.techTables.find((t) => t.id === id);
-    state.db.techTables = state.db.techTables.filter((t) => t.id !== id);
-    writeStateFile(state);
-    return item || null;
+    return mutate((state) => {
+      const item = state.db.techTables.find((t) => t.id === id);
+      state.db.techTables = state.db.techTables.filter((t) => t.id !== id);
+      return item || null;
+    });
   }
 };
 
